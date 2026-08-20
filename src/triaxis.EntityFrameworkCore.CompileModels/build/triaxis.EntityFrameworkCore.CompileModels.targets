@@ -1,0 +1,126 @@
+<Project>
+
+  <!--
+    Compiles the EF Core model of the referencing project at build time, into that project's own
+    assembly. EF finds it there on its own through the [DbContextModel] attribute the generator
+    emits, so no consumer of the assembly has to opt in and none can be left out. Nothing generated
+    is committed.
+
+    The generator derives the model by loading the assembly, so it can only run once the compiler
+    has produced one. The build therefore compiles, generates, and compiles again with the
+    generated sources added. Only the second pass may see them: a model left over from an earlier
+    build describes entities as they were then, and would fail to compile against sources that have
+    since changed. The passes are told apart by EFCompileModelsPass, a global property the second
+    one is started with.
+
+    The two passes cost a full extra compile, but only when something in the project actually
+    changed. When it hasn't, the compiler is skipped, nothing triggers generation, and the assembly
+    from the previous build already carries the model.
+  -->
+
+  <PropertyGroup>
+    <EFCompileModels Condition="'$(EFCompileModels)' == ''">true</EFCompileModels>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(EFCompileModels)' == 'true'">
+    <TargetsTriggeredByCompilation>$(TargetsTriggeredByCompilation);_EFCompileModelsGenerate</TargetsTriggeredByCompilation>
+  </PropertyGroup>
+
+  <!--
+    The ef CLI has to match the EF Core the project runs against, and the project already says which
+    that is. Microsoft.EntityFrameworkCore.Design is the authority when present, because generating
+    a model needs it anyway; any other Microsoft.EntityFrameworkCore package answers just as well
+    when it isn't. Several answers that disagree are no answer at all, and EFCompileModelsToolVersion
+    settles it.
+  -->
+  <Target Name="_EFCompileModelsResolveToolVersion" Condition="'$(EFCompileModelsToolVersion)' == ''">
+    <ItemGroup>
+      <!-- Qualified, because central version management leaves PackageReference items without a
+           version and unqualified batching would then fail rather than skip them. -->
+      <_EFCompileModelsVersionSource Include="@(PackageVersion)" Condition="'%(PackageVersion.Version)' != ''" />
+      <_EFCompileModelsVersionSource Include="@(PackageReference)" Condition="'%(PackageReference.Version)' != ''" />
+      <_EFCompileModelsDesignVersion Include="@(_EFCompileModelsVersionSource)"
+                                     Condition="'%(Identity)' == 'Microsoft.EntityFrameworkCore.Design'" />
+      <_EFCompileModelsAnyVersion Include="@(_EFCompileModelsVersionSource)"
+                                  Condition="$([System.String]::Copy('%(Identity)').StartsWith('Microsoft.EntityFrameworkCore'))" />
+    </ItemGroup>
+    <PropertyGroup>
+      <EFCompileModelsToolVersion>@(_EFCompileModelsDesignVersion->'%(Version)'->Distinct())</EFCompileModelsToolVersion>
+      <EFCompileModelsToolVersion Condition="'$(EFCompileModelsToolVersion)' == ''">@(_EFCompileModelsAnyVersion->'%(Version)'->Distinct())</EFCompileModelsToolVersion>
+      <EFCompileModelsToolVersion Condition="$(EFCompileModelsToolVersion.Contains(';'))"></EFCompileModelsToolVersion>
+    </PropertyGroup>
+  </Target>
+
+  <!--
+    Nothing a package ships can take part in the restore that installs that package, so the CLI
+    cannot be a PackageDownload of the referencing project. Restoring a project of our own that asks
+    for nothing else puts it in the same package folder, from the same feeds, and only when the
+    version at hand is not there already.
+  -->
+  <Target Name="_EFCompileModelsResolveTool" DependsOnTargets="_EFCompileModelsResolveToolVersion">
+    <Error Condition="'$(EFCompileModelsToolVersion)' == ''"
+           Text="Could not tell which version of the ef CLI to generate the model with: this project references no Microsoft.EntityFrameworkCore package that names a version, or references several that disagree. Set the EFCompileModelsToolVersion property to the version of EF Core the project runs against." />
+    <PropertyGroup>
+      <_EFCompileModelsToolDir>$([MSBuild]::NormalizeDirectory('$(NuGetPackageRoot)', 'dotnet-ef', '$(EFCompileModelsToolVersion)'))</_EFCompileModelsToolDir>
+      <_EFCompileModelsToolProject>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'EFCompileModelsTool', 'EFCompileModelsTool.proj'))</_EFCompileModelsToolProject>
+    </PropertyGroup>
+    <!-- Restored beside the project being built so that it reads the same NuGet.config, but on its
+         own otherwise: whatever the surrounding directories impose on real projects is none of its
+         business. -->
+    <Copy Condition="!Exists('$(_EFCompileModelsToolDir)')"
+          SourceFiles="$(MSBuildThisFileDirectory)EFCompileModelsTool.proj"
+          DestinationFiles="$(_EFCompileModelsToolProject)" />
+    <MSBuild Condition="!Exists('$(_EFCompileModelsToolDir)')"
+             Projects="$(_EFCompileModelsToolProject)" Targets="Restore"
+             Properties="EFCompileModelsToolVersion=$(EFCompileModelsToolVersion);ImportDirectoryBuildProps=false;ImportDirectoryBuildTargets=false;ImportDirectoryPackagesProps=false" />
+    <ItemGroup>
+      <!-- The framework the CLI itself targets is not ours to predict across EF versions. -->
+      <_EFCompileModelsCli Include="$(_EFCompileModelsToolDir)tools/*/any/dotnet-ef.dll" />
+    </ItemGroup>
+    <Error Condition="'@(_EFCompileModelsCli)' == ''"
+           Text="The ef CLI $(EFCompileModelsToolVersion) is not in $(_EFCompileModelsToolDir) and could not be restored there." />
+  </Target>
+
+  <!-- Generated sources belong under obj/, where the SDK's default source glob will not pick them
+       up a second time. $(IntermediateOutputPath) has no value yet while the project is being
+       evaluated, which is why this is resolved in a target. -->
+  <Target Name="_EFCompileModelsSettings">
+    <PropertyGroup>
+      <EFCompileModelsOutputDir Condition="'$(EFCompileModelsOutputDir)' == ''">$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'EFCompiledModel'))</EFCompileModelsOutputDir>
+      <EFCompileModelsNamespace Condition="'$(EFCompileModelsNamespace)' == ''">$(RootNamespace).CompiledModels</EFCompileModelsNamespace>
+      <!-- Every context in the project, which is what a project that has one wants too. -->
+      <EFCompileModelsContext Condition="'$(EFCompileModelsContext)' == ''">*</EFCompileModelsContext>
+    </PropertyGroup>
+  </Target>
+
+  <!-- A design-time build compiles nothing an editor could then run the generator against. -->
+  <Target Name="_EFCompileModelsGenerate"
+          Condition="'$(EFCompileModelsPass)' == '' AND '$(DesignTimeBuild)' != 'true'">
+    <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="_EFCompileModelsRecompile"
+             Properties="Configuration=$(Configuration);Platform=$(Platform);TargetFramework=$(TargetFramework);EFCompileModelsPass=true" />
+  </Target>
+
+  <!-- The CLI loads the assembly from the output directory, which the first pass has not written to
+       yet, so fill it first. What the second pass compiles overwrites it there, and the outer build
+       copies that out once this returns. -->
+  <Target Name="_EFCompileModelsRecompile"
+          DependsOnTargets="_EFCompileModelsSettings;_EFCompileModelsResolveTool;ResolveReferences;CopyFilesToOutputDirectory">
+    <RemoveDir Directories="$(EFCompileModelsOutputDir)" />
+    <Exec Command="dotnet exec &quot;@(_EFCompileModelsCli)&quot; dbcontext optimize --no-build --configuration $(Configuration) --framework $(TargetFramework) --context &quot;$(EFCompileModelsContext)&quot; --output-dir &quot;$(EFCompileModelsOutputDir)&quot; --namespace $(EFCompileModelsNamespace) $(EFCompileModelsArguments)"
+          WorkingDirectory="$(MSBuildProjectDirectory)" StandardOutputImportance="low" />
+    <Error Condition="!Exists('$(EFCompileModelsOutputDir)')"
+           Text="The ef CLI wrote no model to $(EFCompileModelsOutputDir)." />
+    <CallTarget Targets="Build" />
+  </Target>
+
+  <!-- The compile that CallTarget above starts. It picks the sources up from the directory rather
+       than from an item the generating target could have filled, because a target reached through
+       CallTarget sees the properties the pass has set but not its items. -->
+  <Target Name="_EFCompileModelsInclude" BeforeTargets="CoreCompile" DependsOnTargets="_EFCompileModelsSettings"
+          Condition="'$(EFCompileModelsPass)' == 'true'">
+    <ItemGroup>
+      <Compile Include="$(EFCompileModelsOutputDir)/**/*.cs" />
+    </ItemGroup>
+  </Target>
+
+</Project>

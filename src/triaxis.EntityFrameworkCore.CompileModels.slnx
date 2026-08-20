@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="triaxis.EntityFrameworkCore.CompileModels.Tests/triaxis.EntityFrameworkCore.CompileModels.Tests.csproj" />
+  <Project Path="triaxis.EntityFrameworkCore.CompileModels/triaxis.EntityFrameworkCore.CompileModels.csproj" />
+</Solution>

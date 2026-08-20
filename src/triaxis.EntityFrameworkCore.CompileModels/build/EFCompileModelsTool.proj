@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Asks for nothing but the ef CLI, so that restoring it puts the CLI in the package folder the
+    project being built already uses. Copied next to that project and restored from
+    triaxis.EntityFrameworkCore.CompileModels.targets; never built.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageDownload Include="dotnet-ef" Version="[$(EFCompileModelsToolVersion)]" />
+  </ItemGroup>
+
+</Project>
