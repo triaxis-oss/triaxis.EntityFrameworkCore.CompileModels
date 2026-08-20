@@ -1,0 +1,87 @@
+<Project>
+
+  <!--
+    Compiles the EF Core model of the referencing project at build time, into that project's own
+    assembly. EF finds it there on its own through the [DbContextModel] attribute the generator
+    emits, so no consumer of the assembly has to opt in and none can be left out. Nothing generated
+    is committed.
+
+    The generator derives the model by loading the assembly, so it can only run once the compiler
+    has produced one. The build therefore compiles, generates, and compiles again with the
+    generated sources added. Only the second pass may see them: a model left over from an earlier
+    build describes entities as they were then, and would fail to compile against sources that have
+    since changed. The passes are told apart by EFCompileModelsPass, a global property the second
+    one is started with.
+
+    The two passes cost a full extra compile, but only when something in the project actually
+    changed. When it hasn't, the compiler is skipped, nothing triggers generation, and the assembly
+    from the previous build already carries the model.
+  -->
+
+  <PropertyGroup>
+    <EFCompileModels Condition="'$(EFCompileModels)' == ''">true</EFCompileModels>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(EFCompileModels)' == 'true'">
+    <TargetsTriggeredByCompilation>$(TargetsTriggeredByCompilation);_EFCompileModelsGenerate</TargetsTriggeredByCompilation>
+    <!-- The generator is started on this project's own runtime configuration, which a class
+         library does not otherwise write. Microsoft.EntityFrameworkCore.Design asks for the same
+         file for the same reason, but only when its build assets are included. -->
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+  </PropertyGroup>
+
+  <!-- Generated sources belong under obj/, where the SDK's default source glob will not pick them
+       up a second time. $(IntermediateOutputPath) has no value yet while the project is being
+       evaluated, which is why this is resolved in a target. -->
+  <Target Name="_EFCompileModelsSettings">
+    <PropertyGroup>
+      <EFCompileModelsOutputDir Condition="'$(EFCompileModelsOutputDir)' == ''">$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'EFCompiledModel'))</EFCompileModelsOutputDir>
+      <EFCompileModelsNamespace Condition="'$(EFCompileModelsNamespace)' == ''">$(RootNamespace).CompiledModels</EFCompileModelsNamespace>
+      <!-- Every context in the project, which is what a project that has one wants too. -->
+      <EFCompileModelsContext Condition="'$(EFCompileModelsContext)' == ''">*</EFCompileModelsContext>
+    </PropertyGroup>
+  </Target>
+
+  <!-- A design-time build compiles nothing an editor could then run the generator against. -->
+  <Target Name="_EFCompileModelsGenerate"
+          Condition="'$(EFCompileModelsPass)' == '' AND '$(DesignTimeBuild)' != 'true'">
+    <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="_EFCompileModelsRecompile"
+             Properties="Configuration=$(Configuration);Platform=$(Platform);TargetFramework=$(TargetFramework);EFCompileModelsPass=true" />
+  </Target>
+
+  <!-- The generator loads the assembly from the output directory, which the first pass has not
+       written to yet, so fill it first. What the second pass compiles overwrites it there, and the
+       outer build copies that out once this returns. -->
+  <Target Name="_EFCompileModelsRecompile"
+          DependsOnTargets="_EFCompileModelsSettings;ResolveReferences;CopyFilesToOutputDirectory">
+    <PropertyGroup>
+      <_EFCompileModelsGenerator>$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)', '..', 'tools', 'net8.0', 'triaxis.EntityFrameworkCore.CompileModels.dll'))</_EFCompileModelsGenerator>
+      <_EFCompileModelsNullable>false</_EFCompileModelsNullable>
+      <_EFCompileModelsNullable Condition="'$(Nullable)' == 'enable' OR '$(Nullable)' == 'annotations'">true</_EFCompileModelsNullable>
+    </PropertyGroup>
+    <RemoveDir Directories="$(EFCompileModelsOutputDir)" />
+    <!--
+      Started on the built project's deps.json and runtimeconfig.json, so that the generator
+      resolves the same assemblies the project will at run time. That includes the Design assembly,
+      which is a development dependency and so lives in the package folder rather than beside the
+      project's output, hence the probing path. Every value is quoted, so that one the project
+      leaves empty still arrives as an argument.
+    -->
+    <Exec Command="dotnet exec --depsfile &quot;$(ProjectDepsFilePath)&quot; --runtimeconfig &quot;$(ProjectRuntimeConfigFilePath)&quot; --additionalprobingpath &quot;$(NuGetPackageRoot.TrimEnd('\/'))&quot; &quot;$(_EFCompileModelsGenerator)&quot; --assembly &quot;$(AssemblyName)&quot; --project-dir &quot;$(MSBuildProjectDirectory)&quot; --root-namespace &quot;$(RootNamespace)&quot; --language &quot;$(Language)&quot; --nullable &quot;$(_EFCompileModelsNullable)&quot; --output-dir &quot;$(EFCompileModelsOutputDir)&quot; --namespace &quot;$(EFCompileModelsNamespace)&quot; --context &quot;$(EFCompileModelsContext)&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)" StandardOutputImportance="low" />
+    <Error Condition="!Exists('$(EFCompileModelsOutputDir)')"
+           Text="The generator wrote no model to $(EFCompileModelsOutputDir)." />
+    <CallTarget Targets="Build" />
+  </Target>
+
+  <!-- The compile that CallTarget above starts. It picks the sources up from the directory rather
+       than from an item the generating target could have filled, because a target reached through
+       CallTarget sees the properties the pass has set but not its items. -->
+  <Target Name="_EFCompileModelsInclude" BeforeTargets="CoreCompile" DependsOnTargets="_EFCompileModelsSettings"
+          Condition="'$(EFCompileModelsPass)' == 'true'">
+    <ItemGroup>
+      <Compile Include="$(EFCompileModelsOutputDir)/**/*.cs" />
+    </ItemGroup>
+  </Target>
+
+</Project>
