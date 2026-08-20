@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup>
+    <Authors>ssimek</Authors>
+    <Company>triaxis s.r.o.</Company>
+    <Description>Compiles the Entity Framework Core model of the referencing project into its own assembly at build time</Description>
+    <PackageVersion>0.0.1-dev</PackageVersion>
+    <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageTags>entity-framework-core;efcore;msbuild;compiled-model;startup-performance</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../LICENSE.txt" Pack="true" PackagePath="$(PackageLicenseFile)" />
+    <None Include="../../README.md" Pack="true" PackagePath="$(PackageReadmeFile)" />
+    <None Include="$(BaseIntermediateOutputPath)/icon.png" Pack="true" PackagePath="$(PackageIcon)" />
+  </ItemGroup>
+
+  <Target Name="DownloadPackageIcon" BeforeTargets="GenerateNuspec">
+    <DownloadFile SourceUrl="https://raw.githubusercontent.com/triaxis-oss/content/main/icon.png" DestinationFolder="$(BaseIntermediateOutputPath)" />
+  </Target>
+</Project>
